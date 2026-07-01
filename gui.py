@@ -13,6 +13,10 @@ CLI functionality for people who'd rather point-and-click:
 3. Filter by source / destination / ping type
 4. View summary stats and a latency chart
 
+Records in the table are always shown sorted by PingTimeMillis, highest
+latency first, regardless of whether you just loaded, filtered, cleared,
+or ran a spike search.
+
 Run with:  python gui.py
 """
 
@@ -216,8 +220,8 @@ class PingMonitorApp(tk.Tk):
         self.dest_cb["values"] = sorted(pairs["DestinationHost"].unique().tolist())
         self.pingtype_cb["values"] = sorted(pairs["PingType"].unique().tolist())
 
-        self.status_var.set(f"Loaded {len(self.df)} rows from {path}.")
-        self._render_table(self.df.head(500))
+        self.status_var.set(f"Loaded {len(self.df)} rows from {path} (sorted by latency, highest first).")
+        self._display(self.df)
 
     def _current_filter_kwargs(self) -> dict:
         return dict(
@@ -231,16 +235,23 @@ class PingMonitorApp(tk.Tk):
             messagebox.showwarning(APP_TITLE, "Load a normal-form file first.")
             return
         filtered = filter_rows(self.df, **self._current_filter_kwargs())
-        self.status_var.set(f"Showing {min(len(filtered), 500)} of {len(filtered)} matching rows.")
-        self._render_table(filtered.head(500))
+        self.status_var.set(
+            f"Showing {min(len(filtered), 500)} of {len(filtered)} matching rows (sorted by latency, highest first)."
+        )
+        self._display(filtered)
 
     def _clear_filter(self) -> None:
         self.source_cb.set("")
         self.dest_cb.set("")
         self.pingtype_cb.set("")
         if self.df is not None:
-            self._render_table(self.df.head(500))
-            self.status_var.set(f"Loaded {len(self.df)} rows.")
+            self._display(self.df)
+            self.status_var.set(f"Loaded {len(self.df)} rows (sorted by latency, highest first).")
+
+    def _display(self, df) -> None:
+        """Sort by PingTimeMillis descending, cap at 500 rows, and render."""
+        sorted_df = df.sort_values(by="PingTimeMillis", ascending=False)
+        self._render_table(sorted_df.head(500))
 
     def _render_table(self, df) -> None:
         self.tree.delete(*self.tree.get_children())
@@ -273,43 +284,38 @@ class PingMonitorApp(tk.Tk):
             return
         filtered = filter_rows(self.df, **self._current_filter_kwargs())
         spikes = detect_spikes(filtered, threshold_ms=threshold)
-        self._render_table(spikes.head(500))
-        self.status_var.set(f"{len(spikes)} row(s) above {threshold}ms.")
+        self.status_var.set(f"{len(spikes)} row(s) above {threshold}ms (sorted by latency, highest first).")
+        self._display(spikes)
 
     def _plot(self) -> None:
         if self.df is None:
             messagebox.showwarning(APP_TITLE, "Load a normal-form file first.")
             return
-        filtered = filter_rows(self.df, **self._current_filter_kwargs())
+
+        filter_kwargs = self._current_filter_kwargs()
+        filtered = filter_rows(self.df, **filter_kwargs)
         if filtered.empty:
             messagebox.showinfo(APP_TITLE, "No matching rows to plot.")
             return
 
         out_path = filedialog.asksaveasfilename(
-            title="Save plot as...", defaultextension=".png",
-            filetypes=[("PNG image", "*.png")], initialfile="latency.png",
+            title="Save interactive chart as...", defaultextension=".html",
+            filetypes=[("HTML Document", "*.html")], initialfile="latency.html",
         )
         if not out_path:
             return
 
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
+        src_label = filter_kwargs["source"] or "All Sources"
+        dst_label = filter_kwargs["dest"] or "All Destinations"
+        pt_label = filter_kwargs["ping_type"] or "ping"
+        title = f"Ping Times ({pt_label}) between {src_label} and {dst_label}"
 
-        fig, ax = plt.subplots(figsize=(12, 5))
-        for (src, dst, pt), g in filtered.groupby(["SourceHost", "DestinationHost", "PingType"]):
-            ax.plot(g["Timestamp"], g["PingTimeMillis"], marker=".", markersize=2,
-                    linewidth=0.8, label=f"{src} -> {dst} ({pt})")
-        ax.set_xlabel("Time")
-        ax.set_ylabel("Ping time (ms)")
-        ax.set_title("Ping latency over time")
-        ax.legend(fontsize=8)
-        fig.autofmt_xdate()
-        fig.tight_layout()
-        fig.savefig(out_path, dpi=150)
-        plt.close(fig)
+        # Call the new HTML exporter
+        from ping_monitor.analyzer import export_dygraphs_html
 
-        messagebox.showinfo(APP_TITLE, f"Saved plot to:\n{out_path}")
+        export_dygraphs_html(filtered, Path(out_path), title=title, series_label=pt_label)
+
+        messagebox.showinfo(APP_TITLE, f"Saved interactive chart to:\n{out_path}")
 
 
 def main() -> None:
