@@ -22,23 +22,46 @@ The tool scans a root folder for files matching:
 <root>/<sourceHost>/monitor/<pingType>-ping/<destHost>/logYYYYMMDD.txt
 ```
 
-e.g. `C:\logs\hostA\monitor\icmp-ping\db01.example.com\log20260629.txt`
+Confirmed real-world example:
 
-Each line is expected to contain a syslog-style timestamp, a `Host` or
-`from` token naming the destination, and a numeric latency ending in `ms`
-or `S` (seconds), e.g.:
+```
+C:\Logs\server_name\monitor\icmp-ping\dest_server\log20260701.txt
+C:\Logs\server_name\monitor\mcas-ping\dest_server\log20260625.txt
+C:\Logs\server_name\monitor\tcp-ping\dest_server\log20260701.txt
+```
+
+Run the build against `C:\Logs` as the root and it will recurse through all
+three `-ping` subfolders under every source host automatically:
+
+```bat
+python cli.py build --root C:\Logs --out PingLogs_NormalForm.txt
+```
+
+Folder/host names with spaces are fine as long as you quote the path.
+
+Each line is expected to contain a syslog-style timestamp (either
+abbreviated or full month names, e.g. `Jun` or `June`), a `Host` or `from`
+token naming the destination, and a numeric latency ending in `ms` or `S`
+(ISO-8601 duration seconds, e.g. `PT0.045S` from a Java `Duration`), e.g.:
 
 ```
 Jun 29 08:26:29 hostA pinger: Host db01.example.com is alive 12.345 ms
-Jun 29 08:26:31 hostA mcasping: response from db02.example.com 0.045S
+July 01 00:00:55 [INFO] 64 bytes from vm-paap-pp1-twb.hbs.net.au (10.110.24.174): icmp_seq=1 ttl=60 time=4.00 ms
+June 25 00:00:10 [INFO] Host vm-paap-pp1-twb.hbs.net.au [10.110.24.174] is reachable on port 4 (elapsed: PT0.004325512S)
 ```
 
-`mcas`-type pings are assumed to be reported in seconds and are
-automatically converted to milliseconds, matching the original awk logic.
+**Unit conversion is based on what's actually in each line, not on the
+folder name.** Any value suffixed `S` (seconds) is converted to
+milliseconds automatically — this covers `mcas-ping` logs, and also covers
+`tcp-ping` or `icmp-ping` logs if they happen to come from the same
+seconds-reporting HostChecker tool rather than a plain `ping` command. You
+don't need to tell the tool which folders report which unit.
 
-> **Note:** the three log files you originally attached are a different,
-> general application log (not this ping format) — this tool is meant for
-> when you point it at your actual ping-monitor log tree.
+> **Note:** the destination host in the output always comes from what's
+> written *inside* each log line (e.g. `Host db01.example.com`), not from
+> the folder name it was found under. These normally match, but if a log
+> ever uses a different name (e.g. an IP or short name vs. the folder's
+> FQDN), the line content wins — same as the original bash/perl pipeline.
 
 ## Output
 
@@ -64,18 +87,26 @@ No manual `pip install` needed unless you prefer the command line.
 
 1. **Raw log root folder** — browse to the folder containing your log tree,
    click **Build normal-form file**.
-2. Once built, it auto-loads into the table below.
-3. Use the **Filters** row (source / destination / ping type dropdowns) to
+2. **Capture single file...** — for a loose file that isn't in the
+   `monitor/*-ping/` layout (e.g. one exported directly from a
+   HostChecker tool). It asks for the source host and ping type by hand,
+   then merges the result into your normal-form file.
+3. Once built/loaded, the data auto-loads into the table below.
+4. Use the **Filters** row (source / destination / ping type dropdowns) to
    narrow down a specific host pair, then **Apply filter**.
-4. **Show stats** — min/max/mean/median/p95/p99/stdev for the current filter.
-5. **Find spikes** — lists rows above a latency threshold you set.
-6. **Plot latency...** — saves a PNG chart of latency over time.
+5. **Show stats** — min/max/mean/median/p95/p99/stdev for the current filter.
+6. **Find spikes** — lists rows above a latency threshold you set.
+7. **Plot latency...** — saves a PNG chart of latency over time.
 
 ## Using the command line (`cli.py`)
 
 ```bat
-:: Build the normal-form file
-python cli.py build --root C:\logs --out PingLogs_NormalForm.txt
+:: Build the normal-form file from a folder tree in the monitor/*-ping/ layout
+python cli.py build --root C:\Logs --out PingLogs_NormalForm.txt
+
+:: Capture a single loose file that ISN'T in that folder layout
+:: (source host and ping type aren't in the file, so you supply them)
+python cli.py capture --input log20260625.txt --source server_name --pingtype mcas --out PingLogs_NormalForm.txt --append
 
 :: List every unique source/destination/ping-type combination
 python cli.py list-pairs --file PingLogs_NormalForm.txt

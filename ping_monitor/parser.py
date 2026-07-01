@@ -53,11 +53,20 @@ PATH_INFO_RE = re.compile(
 
 # Matches the perl filter/normalise regex:
 #   ([a-zA-Z]{3}\s+\d{2}\s+\d+\:\d+\:\d+).*\s+(?:(?:Host|from))\s+([^\s]+).*?([\.\d]+)(\s+ms|S).*
+#
+# The month token accepts BOTH abbreviated ("Jun") and full ("June") names -
+# real mcas HostChecker logs use full month names, and a strict {3} capture
+# there silently grabs the wrong 3 letters (e.g. "une" out of "June")
+# instead of failing loudly, which drops every row without any error.
 LINE_RE = re.compile(
-    r"(?P<mon>[a-zA-Z]{3})\s+(?P<day>\d{2})\s+(?P<time>\d+:\d+:\d+)"
+    r"(?P<mon>[A-Za-z]{3,9})\s+(?P<day>\d{2})\s+(?P<time>\d+:\d+:\d+)"
     r".*\s+(?:Host|from)\s+(?P<desthost>\S+)"
-    r".*?(?P<value>[.\d]+)(?:\s+ms|S)"
+    r".*?(?P<value>[.\d]+)(?P<unit>\s+ms|S)"
 )
+
+# Matches "logYYYYMMDD.txt" anywhere in a filename, to recover the year for
+# loose files that aren't sitting in the expected monitor/*-ping/ layout.
+FILENAME_DATE_RE = re.compile(r"log(?P<year>\d{4})(?P<monthday>\d{4})\.txt$")
 
 
 @dataclass
@@ -128,6 +137,7 @@ def parse_line(line: str) -> Optional[dict]:
         "time": m.group("time"),
         "dest_host": m.group("desthost"),
         "value": m.group("value"),
+        "unit": m.group("unit"),
     }
 
 
@@ -140,6 +150,7 @@ def normalise_row(
     dest_host: str,
     ping_type: str,
     raw_value: str,
+    unit: str = " ms",
     tz: Optional[str] = None,
 ) -> Optional[PingRow]:
     """Equivalent of the awk normalisation stage."""
@@ -159,9 +170,14 @@ def normalise_row(
     except ValueError:
         return None
 
-    # mcas pings are reported in seconds -> convert to ms, same as the
-    # original: `if ($6 == "mcas") { pt=pt*1000.0 }`
-    if ping_type == "mcas":
+    # Convert seconds -> ms based on the UNIT ACTUALLY FOUND IN THE LINE
+    # ("S", an ISO-8601 duration suffix like PT0.045S), not on the folder's
+    # ping-type label. The original pipeline assumed only 'mcas' logs ever
+    # report seconds - that held for the samples we've tested, but a
+    # tcp-ping (or any other) log using the same underlying HostChecker
+    # tool would report seconds too, and silently be off by 1000x if the
+    # decision were keyed on the folder name instead of the real unit.
+    if "ms" not in unit:
         value *= 1000.0
 
     return PingRow(
@@ -171,6 +187,88 @@ def normalise_row(
         ping_type=ping_type,
         ping_time_ms=value,
     )
+
+
+def extract_year_from_filename(path: Path) -> Optional[str]:
+    """Recover YYYY from a 'logYYYYMMDD.txt'-style filename, if present."""
+    m = FILENAME_DATE_RE.search(path.name)
+    return m.group("year") if m else None
+
+
+def capture_ping_file(
+    path: Path,
+    source_host: str,
+    ping_type: str,
+    year: Optional[str] = None,
+    dest_host_override: Optional[str] = None,
+    tz: Optional[str] = None,
+) -> Iterator[PingRow]:
+    """
+    Normalise a single raw log file WITHOUT requiring the
+    '.../monitor/<type>-ping/<dest>/logYYYYMMDD.txt' folder convention.
+
+    Use this for ad-hoc / loose files (e.g. one exported straight out of a
+    HostChecker tool) where source host, ping type, and year need to be
+    supplied explicitly rather than inferred from the file's path.
+
+    - source_host / ping_type: always supplied by the caller.
+    - year: taken from the filename ('logYYYYMMDD.txt') if not given.
+    - dest_host_override: if set, every row uses this destination instead
+      of whatever host name appears in each matched line. Leave unset to
+      let each line's own "Host X" / "from X" token decide the destination
+      (useful when one file covers checks against multiple hosts).
+    """
+    path = Path(path)
+    resolved_year = year or extract_year_from_filename(path)
+    if not resolved_year:
+        raise ValueError(
+            f"Could not determine year for '{path.name}'. "
+            "Pass --year explicitly (the filename doesn't end in logYYYYMMDD.txt)."
+        )
+
+    with path.open("r", errors="replace") as fh:
+        for line in fh:
+            parsed = parse_line(line)
+            if not parsed:
+                continue
+            row = normalise_row(
+                mon=parsed["mon"],
+                day=parsed["day"],
+                time_str=parsed["time"],
+                year=resolved_year,
+                source_host=source_host,
+                dest_host=dest_host_override or parsed["dest_host"],
+                ping_type=ping_type,
+                raw_value=parsed["value"],
+                unit=parsed["unit"],
+                tz=tz,
+            )
+            if row:
+                yield row
+
+
+def write_normal_form(rows: Iterable[PingRow], output_path: Path, append: bool = False) -> int:
+    """
+    Write (or merge-append into) a normal-form TSV file, deduping and
+    sorting exactly like build_normal_form does.
+    """
+    output_path = Path(output_path)
+    existing: set[str] = set()
+    if append and output_path.exists():
+        with output_path.open("r") as fh:
+            next(fh, None)  # skip header
+            existing = {line.rstrip("\n") for line in fh if line.strip()}
+
+    for row in rows:
+        existing.add(row.as_line())
+
+    sorted_rows = sorted(existing)
+    with output_path.open("w", newline="\n") as out:
+        out.write("Timestamp\tSourceHost\tDestinationHost\tPingType\tPingTimeMillis\n")
+        for line in sorted_rows:
+            out.write(line + "\n")
+
+    return len(sorted_rows)
 
 
 def process_file(path: Path, root: Path, tz: Optional[str] = None) -> Iterator[PingRow]:
@@ -193,6 +291,7 @@ def process_file(path: Path, root: Path, tz: Optional[str] = None) -> Iterator[P
                 dest_host=parsed["dest_host"],
                 ping_type=ping_type,
                 raw_value=parsed["value"],
+                unit=parsed["unit"],
                 tz=tz,
             )
             if row:

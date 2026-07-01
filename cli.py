@@ -52,7 +52,26 @@ from ping_monitor import (
     stats_by_group,
     detect_spikes,
     detect_gaps,
+    capture_ping_file,
+    write_normal_form,
 )
+
+
+def cmd_capture(args: argparse.Namespace) -> None:
+    rows = list(capture_ping_file(
+        path=Path(args.input),
+        source_host=args.source,
+        ping_type=args.pingtype,
+        year=args.year,
+        dest_host_override=args.dest,
+        tz=None if args.tz.lower() == "none" else args.tz,
+    ))
+    if not rows:
+        print("No matching ping lines found in the file. Nothing written.")
+        return
+    count = write_normal_form(rows, Path(args.out), append=args.append)
+    verb = "Merged into" if args.append else "Wrote"
+    print(f"Parsed {len(rows)} rows from {args.input}. {verb} {args.out} ({count} total rows).")
 
 
 def cmd_build(args: argparse.Namespace) -> None:
@@ -164,6 +183,21 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--tz", default="Australia/Adelaide", help="Timezone name, or 'none' for naive timestamps.")
     b.add_argument("--verbose", action="store_true", help="Print each file as it is processed.")
     b.set_defaults(func=cmd_build)
+
+    cap = sub.add_parser(
+        "capture",
+        help="Normalise a single loose log file that isn't in the monitor/*-ping/ folder layout "
+             "(e.g. a raw mcas HostChecker export).",
+    )
+    cap.add_argument("--input", required=True, help="Path to the raw log file.")
+    cap.add_argument("--source", required=True, help="Source host that ran the checks (not always in the log content).")
+    cap.add_argument("--pingtype", default="mcas", help="Ping type label (default: mcas). Seconds->ms conversion applies when this is 'mcas'.")
+    cap.add_argument("--dest", help="Force a single destination host for every row, overriding what's parsed from each line.")
+    cap.add_argument("--year", help="Override the year (defaults to the 'logYYYYMMDD.txt' portion of the filename).")
+    cap.add_argument("--out", default="PingLogs_NormalForm.txt", help="Output TSV path.")
+    cap.add_argument("--append", action="store_true", help="Merge into an existing normal-form file instead of overwriting it.")
+    cap.add_argument("--tz", default="Australia/Adelaide", help="Timezone name, or 'none' for naive timestamps.")
+    cap.set_defaults(func=cmd_capture)
 
     lp = sub.add_parser("list-pairs", help="List unique source/destination/ping-type combinations.")
     lp.add_argument("--file", default="PingLogs_NormalForm.txt")

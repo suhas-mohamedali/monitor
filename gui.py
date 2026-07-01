@@ -21,7 +21,7 @@ from __future__ import annotations
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from ping_monitor import (
     build_normal_form,
@@ -30,6 +30,8 @@ from ping_monitor import (
     filter_rows,
     compute_stats,
     detect_spikes,
+    capture_ping_file,
+    write_normal_form,
 )
 
 APP_TITLE = "Ping Log Monitor"
@@ -56,6 +58,7 @@ class PingMonitorApp(tk.Tk):
         ttk.Entry(top, textvariable=self.root_var, width=60).grid(row=0, column=1, padx=5)
         ttk.Button(top, text="Browse...", command=self._pick_root).grid(row=0, column=2)
         ttk.Button(top, text="Build normal-form file", command=self._build_async).grid(row=0, column=3, padx=5)
+        ttk.Button(top, text="Capture single file...", command=self._capture_file).grid(row=0, column=4, padx=5)
 
         ttk.Label(top, text="Normal-form file:").grid(row=1, column=0, sticky="w", pady=(8, 0))
         self.file_var = tk.StringVar(value="PingLogs_NormalForm.txt")
@@ -141,6 +144,57 @@ class PingMonitorApp(tk.Tk):
                 self._load_file()
             except Exception as e:  # noqa: BLE001
                 self.status_var.set("Build failed.")
+                messagebox.showerror(APP_TITLE, str(e))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _capture_file(self) -> None:
+        """
+        Normalise a single loose log file (e.g. a raw mcas HostChecker
+        export) that isn't sitting in the monitor/*-ping/ folder layout,
+        and merge it into the current normal-form file.
+        """
+        input_path = filedialog.askopenfilename(
+            title="Select raw log file to capture",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+        )
+        if not input_path:
+            return
+
+        source = simpledialog.askstring(
+            APP_TITLE, "Source host that ran these checks:", parent=self
+        )
+        if not source:
+            return
+
+        ping_type = simpledialog.askstring(
+            APP_TITLE, "Ping type:", initialvalue="mcas", parent=self
+        ) or "mcas"
+
+        out = self.file_var.get().strip() or "PingLogs_NormalForm.txt"
+        self.status_var.set(f"Capturing {input_path}...")
+        self.update_idletasks()
+
+        def worker():
+            try:
+                rows = list(capture_ping_file(
+                    path=Path(input_path), source_host=source, ping_type=ping_type,
+                ))
+                if not rows:
+                    self.status_var.set("No matching ping lines found in that file.")
+                    messagebox.showinfo(APP_TITLE, "No matching ping lines found in that file.")
+                    return
+                count = write_normal_form(rows, Path(out), append=True)
+                self.status_var.set(
+                    f"Captured {len(rows)} rows from {Path(input_path).name} into {out} ({count} total rows)."
+                )
+                self._load_file()
+            except ValueError as e:
+                # Most likely: couldn't infer the year from the filename.
+                self.status_var.set("Capture failed.")
+                messagebox.showerror(APP_TITLE, str(e))
+            except Exception as e:  # noqa: BLE001
+                self.status_var.set("Capture failed.")
                 messagebox.showerror(APP_TITLE, str(e))
 
         threading.Thread(target=worker, daemon=True).start()
