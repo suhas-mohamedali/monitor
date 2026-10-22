@@ -57,17 +57,19 @@ ext.ReturnPaymentRequest.Document.PmtRtr.TxInf.OrgnlTxId ?= sess.paymentData.pay
 ext.ReturnPaymentRequest.Document.PmtRtr.TxInf.RtrdIntrBkSttlmAmt ?= sess.paymentData.payment.RtrdIntrBkSttlmAmt._text;
 ext.ReturnPaymentRequest.Document.PmtRtr.TxInf.RtrdIntrBkSttlmAmt.setAttr('Ccy', sess.paymentData.payment.RtrdIntrBkSttlmAmt._Ccy) //SM fix
 ext.ReturnPaymentRequest.Document.PmtRtr.TxInf.OrgnlInstrId ?= sess.paymentData.payment.PmtId.InstrId;
-ext.ReturnPaymentRequest.Document.PmtRtr.TxInf.RtrRsnInf[0].Rsn.Cd ?= sess.paymentData.payment.RtrRsnInf[0].Rsn.Cd;
-ext.ReturnPaymentRequest.Document.PmtRtr.TxInf.RtrRsnInf[0].AddtlInf ?= sess.paymentData.payment.RtrRsnInf[0].AddtlInf;
+ext.ReturnPaymentRequest.Document.PmtRtr.TxInf.RtrRsnInf.Rsn.Cd ?= sess.paymentData.payment.RtrRsnInf[0].Rsn.Cd;
+ext.ReturnPaymentRequest.Document.PmtRtr.TxInf.RtrRsnInf.AddtlInf ?= sess.paymentData.payment.RtrRsnInf[0].AddtlInf;
 ext.ReturnPaymentRequest.Document.PmtRtr.OrgnlGrpInf.OrgnlCreDtTm ?= sess.paymentData.AppHdr.CreDt // SM fix
 ext.ReturnPaymentRequest.Document.PmtRtr.OrgnlGrpInf.OrgnlMsgId ?= sess.paymentData.GrpHdr.MsgId // SM fix
 ext.ReturnPaymentRequest.Document.PmtRtr.OrgnlGrpInf.OrgnlMsgNmId = 'pacs.008.001.05' //SM fix
 
 // ===== Added from sess-to-xml-fix-proposal.groovy (syntax from the working inbound script) =====
 // --- New (defect 4): inbound 18-20 pattern. Inbound sends Ustrd[0] only; the second block covers the sheet's 140-char split
-if (??sess.paymentData.payment.RmtInf) {
-  ext.ReturnPaymentRequest.Document.PmtRtr.TxInf.OrgnlTxRef.RmtInf.Ustrd[0] ?= sess.paymentData.payment.RmtInf.Ustrd[0]
-  ext.ReturnPaymentRequest.Document.PmtRtr.TxInf.OrgnlTxRef.RmtInf.Ustrd[1] ?= sess.paymentData.payment.RmtInf.Ustrd[1]
+// ext Ustrd is not an array (inbound 19 assigns it without an index), so join the two sess halves back into one value
+if (??sess.paymentData.payment.RmtInf.Ustrd[1]) {
+  ext.ReturnPaymentRequest.Document.PmtRtr.TxInf.OrgnlTxRef.RmtInf.Ustrd = sess.paymentData.payment.RmtInf.Ustrd[0] + sess.paymentData.payment.RmtInf.Ustrd[1]
+} else if (??sess.paymentData.payment.RmtInf) {
+  ext.ReturnPaymentRequest.Document.PmtRtr.TxInf.OrgnlTxRef.RmtInf.Ustrd = sess.paymentData.payment.RmtInf.Ustrd[0]
 }
 
 // --- New: sheet rows 26-27, inbound 27, 30, 144
@@ -114,7 +116,7 @@ ext.ReturnPaymentRequest.Document.PmtRtr.TxInf.OrgnlTxRef.Cdtr.PstlAdr.TwnNm ?= 
 ext.ReturnPaymentRequest.Document.PmtRtr.TxInf.OrgnlTxRef.Cdtr.PstlAdr.CtrySubDvsn ?= sess.paymentData.payment.Dbtr.PstlAdr.CtrySubDvsn
 ext.ReturnPaymentRequest.Document.PmtRtr.TxInf.OrgnlTxRef.Cdtr.PstlAdr.Ctry ?= sess.paymentData.payment.Dbtr.PstlAdr.Ctry
 ext.ReturnPaymentRequest.Document.PmtRtr.TxInf.OrgnlTxRef.Cdtr.PstlAdr.AdrLine[0] ?= sess.paymentData.payment.Dbtr.PstlAdr.AdrLine[0]
-ext.ReturnPaymentRequest.Document.PmtRtr.TxInf.OrgnlTxRef.Cdtr.PstlAdr.AdrLine[1] ?= sess.paymentData.payment.Dbtr.PstlAdr.AdrLine[1]
+ext.ReturnPaymentRequest.Document.PmtRtr.TxInf.OrgnlTxRef.Cdtr.PstlAdr.AdrLine[1] ?= sess.paymentData.payment.Dbtr.PstlAdr.AdrLine[1]   // drop if ext AdrLine allows only one line
 
 // PAL-1653 Saving Transaction Status Code from Cuscal so it can be stored in IPF Translog
 saved.settlementStatusData_payment_TxSts ?= sess.settlementStatusData.payment.TxSts
